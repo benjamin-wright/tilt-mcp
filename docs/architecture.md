@@ -67,22 +67,32 @@ The server is intentionally **stateless** — every tool call queries Tilt's API
 
 ## 3. Tilt API
 
-Tilt embeds a Kubernetes-style API server. Resources are accessed at:
+Tilt exposes two HTTP interfaces at port 10350. This server uses the **web UI backend API** — not the Kubernetes-style API server.
 
-```
-http://<host>:<port>/apis/tilt.dev/v1alpha1/<resource>[/<name>]
-```
-
-Resources used by this server:
-
-| Resource | Purpose |
+| Endpoint | Notes |
 |---|---|
-| `uiresources` | Per-resource build and runtime status |
-| `uisessions` | Overall Tilt session state |
-| `cmds` | Custom commands registered in the Tiltfile |
-| `filewatches` | File watch configuration and last-seen timestamps |
+| `GET /api/view` | Returns full session state in one call: `uiResources`, `uiSession`, logs, and buttons. Plain HTTP, no auth, no TLS. Used by this server. |
+| `/apis/tilt.dev/v1alpha1/` | Kubernetes-style REST API. Runs on a separate dynamic port with TLS and a Bearer token. Used by the `tilt` CLI. Not used by this server. |
 
-All responses are JSON and follow Kubernetes list/object conventions (`items`, `metadata`, `status`).
+The `/api/view` response shape:
+
+```
+{
+  uiResources: UIResource[]   // per-resource build/runtime status
+  uiSession:   UISession      // overall session: tilt version, start time, fatal errors
+  tiltStartTime: string
+  isComplete:  boolean
+}
+```
+
+Fields used per `UIResource`:
+
+| Field | Values |
+|---|---|
+| `status.buildHistory[0].error` | Non-empty string = last build failed |
+| `status.buildHistory[0].finishTime` | Present = build has completed |
+| `status.updateStatus` | `ok`, `error`, `pending` |
+| `status.runtimeStatus` | `ok`, `error`, `pending`, `not_applicable` |
 
 ---
 

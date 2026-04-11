@@ -1,0 +1,6 @@
+def always_succeeds():
+    local_resource(
+        'always-succeeds',
+        cmd='echo "build ok"',
+        labels=['examples'],
+    )

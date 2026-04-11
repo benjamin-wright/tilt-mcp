@@ -20,6 +20,17 @@
 - Never write generated files by hand (e.g. lock files, generated code). Run the tool or note the exact command.
 - Never add npm packages by editing `package.json` directly or running `npm install`. Always tell the user to run `npq install <package>` and wait for them to confirm it is installed before proceeding.
 
+## Diagnostics and Error Checking
+
+**Prefer LSP diagnostics over running builds to check for errors.**
+
+- Always use `get_errors` to query LSP diagnostics before running a build. The IDE has already computed these — running a build to re-discover them is slow and redundant.
+- Only run a build when LSP diagnostics are clean and you need to catch things outside the LSP's scope (missing files, codegen, runtime config), or when explicitly asked.
+- After editing a file, call `get_errors` on the changed file to validate the change before moving on.
+- If `get_errors` returns no results for a file that should have LSP coverage (e.g. a `.ts` file), flag this to the user — it may mean the language server isn't running or is misconfigured.
+- If LSP errors exist that you are intentionally ignoring (e.g. they pre-existed and are unrelated to the current task), say so explicitly. Do not silently skip past them.
+- Persistent unexplained LSP errors across the workspace are worth flagging — they often indicate a misconfigured linter, missing tsconfig, or broken extension.
+
 ## Context Before Action
 
 Before changing code, read the relevant sources — do not rely on memory or assumptions.

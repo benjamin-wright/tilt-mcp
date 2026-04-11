@@ -17,15 +17,15 @@ server.registerTool(
     inputSchema: z.object({}),
   },
   async () => {
-    const list = await listResources();
-    const lines = list.items.map(r => {
-      const build = r.status.currentBuild;
-      const buildStatus = build?.error
-        ? `build-error: ${build.error}`
-        : build?.finishTime
-          ? 'build-ok'
+    const resources = await listResources();
+    const lines = resources.map(r => {
+      const latest = r.status.buildHistory?.[0];
+      const buildStatus = latest?.error
+        ? `error`
+        : latest?.finishTime
+          ? r.status.updateStatus ?? 'ok'
           : 'building';
-      return `${r.metadata.name}  build=${buildStatus}  runtime=${r.status.runtimeStatus ?? 'unknown'}`;
+      return `${r.metadata.name}  build=${buildStatus}  runtime=${r.status.runtimeStatus ?? 'not_applicable'}`;
     });
     return {
       content: [{ type: 'text', text: lines.length ? lines.join('\n') : 'No resources found.' }],
@@ -61,9 +61,9 @@ server.registerTool(
     const session = await getSession();
     const s = session.status;
     const lines = [
-      `tilt version: ${s.runningTiltBuild.version}${s.runningTiltBuild.dev ? ' (dev)' : ''}`,
-      `started: ${s.startTime}`,
-      `pid: ${s.pid}`,
+      `tilt version: ${s.runningTiltBuild?.version ?? 'unknown'}${s.runningTiltBuild?.dev ? ' (dev)' : ''}`,
+      `started: ${s.tiltStartTime ?? 'unknown'}`,
+      `tiltfile: ${s.tiltfileKey ?? 'unknown'}`,
       s.fatalError ? `fatal error: ${s.fatalError}` : 'no fatal errors',
     ];
     return {

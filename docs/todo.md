@@ -10,7 +10,7 @@ Active implementation plan for tilt-mcp.
 
 ### Phase 1: Project Scaffold ✅
 
-Set up the TypeScript project with its build pipeline and a minimal MCP server that starts cleanly.
+Set up the TypeScript project with its build pipeline, a minimal MCP server, and the integration test infrastructure.
 
 #### Tasks
 
@@ -19,12 +19,15 @@ Set up the TypeScript project with its build pipeline and a minimal MCP server t
 - [x] Add `src/tilt/client.ts` — HTTP client stub
 - [x] Add `src/tilt/types.ts` — type stubs for Tilt API resources
 - [x] Write `Dockerfile` (multi-stage, Node.js 22 Alpine)
-- [x] Write `Makefile` (`build`, `push` targets)
+- [x] Write `Makefile` (`build`, `push`, `test` targets)
 - [x] Write `docs/architecture.md`, `docs/contributions.md`
+- [x] Create root `Tiltfile` loading three example resources
+- [x] Add `examples/always-succeeds`, `examples/always-fails-build`, `examples/always-fails-runtime`
+- [x] Add integration tests in `src/tests/integration/resources.test.ts` using `node:test`
 
 #### Verification
 
-`npm run build` exits 0. `docker build .` exits 0.
+`npm run build` exits 0. `docker build .` exits 0. `make test` passes against a running `tilt up` session.
 
 ---
 

@@ -1,66 +1,51 @@
-export interface UIResourceStatus {
-  buildHistory: BuildRecord[];
-  currentBuild: BuildRecord;
-  runtimeStatus: string;
-  k8sResourceInfo?: K8sResourceInfo;
-  localResourceInfo?: LocalResourceInfo;
-}
-
 export interface BuildRecord {
   startTime: string;
   finishTime?: string;
   error?: string;
+  spanID?: string;
   warnings?: string[];
   isCrashRebuild?: boolean;
 }
 
-export interface K8sResourceInfo {
-  podName: string;
-  podPhase: string;
-  podStatus: string;
-  podStatusMessage?: string;
-}
-
-export interface LocalResourceInfo {
-  pid: number;
-  isTest: boolean;
+export interface UIResourceStatus {
+  buildHistory?: BuildRecord[];
+  runtimeStatus?: string;
+  updateStatus?: string;
+  lastDeployTime?: string;
 }
 
 export interface UIResource {
-  apiVersion: string;
-  kind: string;
   metadata: {
     name: string;
-    creationTimestamp: string;
+    creationTimestamp?: string;
   };
   status: UIResourceStatus;
 }
 
-export interface UIResourceList {
-  apiVersion: string;
-  kind: string;
-  items: UIResource[];
-}
-
 export interface UISessionStatus {
-  startTime: string;
+  tiltStartTime?: string;
   tiltfileKey?: string;
-  featureFlags: Record<string, boolean>;
   fatalError?: string;
-  pid: number;
-  runningTiltBuild: {
+  runningTiltBuild?: {
     version: string;
-    commitSHA: string;
-    dev: boolean;
+    date?: string;
+    dev?: boolean;
   };
+  suggestedTiltVersion?: string;
+  featureFlags?: Array<{ name: string; value?: boolean }>;
 }
 
 export interface UISession {
-  apiVersion: string;
-  kind: string;
   metadata: {
     name: string;
-    creationTimestamp: string;
+    creationTimestamp?: string;
   };
   status: UISessionStatus;
+}
+
+export interface TiltView {
+  uiResources: UIResource[];
+  uiSession: UISession;
+  tiltStartTime?: string;
+  isComplete?: boolean;
 }

@@ -1,0 +1,6 @@
+def always_fails_build():
+    local_resource(
+        'always-fails-build',
+        cmd='sh -c "echo \\"build failed\\" >&2; exit 1"',
+        labels=['examples'],
+    )
