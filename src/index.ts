@@ -2,8 +2,18 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { listResources, getResource, getSession, getResourceLogs } from './tilt/client.js';
+import { listResources, getResource, getSession, getResourceLogs, waitForBuild } from './tilt/client.js';
 import type { LogType } from './tilt/client.js';
+
+function describeBuildStatus(updateStatus: string | undefined): string {
+  switch (updateStatus) {
+    case 'ok':      return 'ok';
+    case 'error':   return 'error';
+    case 'pending': return 'building';
+    case 'none':    return 'not-triggered (manual)';
+    default:        return updateStatus ?? 'unknown';
+  }
+}
 
 const server = new McpServer({
   name: 'tilt-mcp',
@@ -20,12 +30,7 @@ server.registerTool(
   async () => {
     const resources = await listResources();
     const lines = resources.map(r => {
-      const latest = r.status.buildHistory?.[0];
-      const buildStatus = latest?.error
-        ? `error`
-        : latest?.finishTime
-          ? r.status.updateStatus ?? 'ok'
-          : 'building';
+      const buildStatus = describeBuildStatus(r.status.updateStatus);
       return `${r.metadata.name}  build=${buildStatus}  runtime=${r.status.runtimeStatus ?? 'not_applicable'}`;
     });
     return {
@@ -88,6 +93,33 @@ server.registerTool(
     const text = segments.map(s => s.text).join('');
     return {
       content: [{ type: 'text', text: text || 'No logs found.' }],
+    };
+  }
+);
+
+server.registerTool(
+  'wait-for-build',
+  {
+    title: 'Wait for Tilt Build',
+    description: 'Block until all Tilt resources have finished building (no resource is in a pending state). Returns a summary of each resource with its final build and runtime status. Use this instead of polling get-resource or list-resources in a loop.',
+    inputSchema: z.object({
+      timeoutSeconds: z.number().int().positive().optional().describe('How long to wait before giving up (default: 120)'),
+    }),
+  },
+  async ({ timeoutSeconds }) => {
+    const result = await waitForBuild(timeoutSeconds ?? 120);
+    const errors = result.resources.filter(r => r.error);
+    const lines = [
+      `Build complete in ${result.elapsed}s.`,
+      errors.length ? `${errors.length} resource(s) with errors:` : 'All resources built successfully.',
+      '',
+      ...result.resources.map(r => {
+        const errSuffix = r.error ? `  ← ${r.error}` : '';
+        return `${r.name}  build=${describeBuildStatus(r.updateStatus)}  runtime=${r.runtimeStatus}${errSuffix}`;
+      }),
+    ];
+    return {
+      content: [{ type: 'text', text: lines.join('\n') }],
     };
   }
 );

@@ -46,6 +46,45 @@ export async function getSession(): Promise<UISession> {
   return view.uiSession;
 }
 
+export interface BuildWaitResult {
+  elapsed: number;
+  resources: Array<{ name: string; updateStatus: string; runtimeStatus: string; error?: string }>;
+}
+
+const POLL_INTERVAL_MS = 1_000;
+
+export async function waitForBuild(timeoutSeconds: number): Promise<BuildWaitResult> {
+  const deadline = Date.now() + timeoutSeconds * 1_000;
+  const start = Date.now();
+
+  while (true) {
+    const view = await fetchView();
+    const resources = view.uiResources.filter(r => r.metadata.name !== '(Tiltfile)');
+
+    const pending = resources.filter(r => r.status.updateStatus === 'pending');
+    if (pending.length === 0) {
+      return {
+        elapsed: Math.round((Date.now() - start) / 1_000),
+        resources: resources.map(r => ({
+          name: r.metadata.name,
+          updateStatus: r.status.updateStatus ?? 'unknown',
+          runtimeStatus: r.status.runtimeStatus ?? 'not_applicable',
+          error: r.status.buildHistory?.[0]?.error,
+        })),
+      };
+    }
+
+    if (Date.now() + POLL_INTERVAL_MS > deadline) {
+      const names = pending.map(r => r.metadata.name).join(', ');
+      throw new Error(
+        `Timed out after ${timeoutSeconds}s waiting for builds to complete. Still pending: ${names}`
+      );
+    }
+
+    await new Promise<void>(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+}
+
 export type LogType = 'all' | 'build' | 'runtime';
 
 const RUNTIME_PREFIXES = ['pod:', 'monitor:', 'events:'];
