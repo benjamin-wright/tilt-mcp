@@ -1,0 +1,38 @@
+{
+  "name": "tilt-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for working with Tilt",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "build": "tsc && chmod 755 build/index.js",
+    "dev": "tsc --watch"
+  },
+  "bin": {
+    "tilt-mcp": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benjamin-wright/tilt-mcp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/benjamin-wright/tilt-mcp/issues"
+  },
+  "homepage": "https://github.com/benjamin-wright/tilt-mcp#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.2"
+  }
+}
