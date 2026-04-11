@@ -1,4 +1,4 @@
-import type { TiltView, UIResource, UISession } from './types.js';
+import type { TiltView, UIResource, UISession, LogSegment } from './types.js';
 
 const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = '10350';
@@ -44,4 +44,37 @@ export async function getResource(name: string): Promise<UIResource> {
 export async function getSession(): Promise<UISession> {
   const view = await fetchView();
   return view.uiSession;
+}
+
+export type LogType = 'all' | 'build' | 'runtime';
+
+const RUNTIME_PREFIXES = ['pod:', 'monitor:', 'events:'];
+
+export async function getResourceLogs(name: string, logType: LogType = 'all'): Promise<LogSegment[]> {
+  const view = await fetchView();
+  const resource = view.uiResources.find(r => r.metadata.name === name);
+  if (!resource) {
+    throw new Error(`Resource not found: ${name}`);
+  }
+
+  const spans = view.logList?.spans ?? {};
+  const matchingSpanIds = new Set(
+    Object.entries(spans)
+      .filter(([id, info]) => {
+        if (info.manifestName !== name) return false;
+        const isRuntime = RUNTIME_PREFIXES.some(p => id.startsWith(p));
+        if (logType === 'build') return !isRuntime;
+        if (logType === 'runtime') return isRuntime;
+        return true;
+      })
+      .map(([id]) => id)
+  );
+
+  if (matchingSpanIds.size === 0) {
+    return [];
+  }
+
+  return (view.logList?.segments ?? []).filter(
+    s => s.spanId !== undefined && matchingSpanIds.has(s.spanId)
+  );
 }

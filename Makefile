@@ -1,5 +1,5 @@
-IMAGE := benjaminwright/tilt-mcp
-TAG   := latest
+IMAGE := benwright/tilt-mcp
+TAG   := v0.0.2
 
 .PHONY: build push test
 

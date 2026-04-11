@@ -44,6 +44,7 @@ Three tools for this phase:
 - `list-resources` — list all Tilt resources with name and current build/runtime status
 - `get-resource` — fetch full status and spec for a named resource
 - `get-session` — return overall Tilt session state (error count, build status, start time)
+- `get-resource-logs` — fetch the build log output for the most recent build of a named resource
 
 #### Tasks
 

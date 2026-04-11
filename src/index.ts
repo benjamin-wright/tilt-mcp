@@ -2,7 +2,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { listResources, getResource, getSession } from './tilt/client.js';
+import { listResources, getResource, getSession, getResourceLogs } from './tilt/client.js';
+import type { LogType } from './tilt/client.js';
 
 const server = new McpServer({
   name: 'tilt-mcp',
@@ -68,6 +69,25 @@ server.registerTool(
     ];
     return {
       content: [{ type: 'text', text: lines.join('\n') }],
+    };
+  }
+);
+
+server.registerTool(
+  'get-resource-logs',
+  {
+    title: 'Get Tilt Resource Logs',
+    description: 'Get log output for a named Tilt resource. Use logType to filter: "build" for build/deploy logs, "runtime" for pod/container logs, "all" for everything (default).',
+    inputSchema: z.object({
+      name: z.string().describe('The name of the Tilt resource'),
+      logType: z.enum(['all', 'build', 'runtime']).optional().describe('Which logs to return: "build" (build and deploy), "runtime" (pod/container/monitor), or "all" (default)'),
+    }),
+  },
+  async ({ name, logType }) => {
+    const segments = await getResourceLogs(name, (logType ?? 'all') as LogType);
+    const text = segments.map(s => s.text).join('');
+    return {
+      content: [{ type: 'text', text: text || 'No logs found.' }],
     };
   }
 );

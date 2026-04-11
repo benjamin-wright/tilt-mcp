@@ -43,9 +43,24 @@ export interface UISession {
   status: UISessionStatus;
 }
 
+export interface LogSegment {
+  spanId?: string;
+  time?: string;
+  text: string;
+  level?: string;
+}
+
+export interface LogList {
+  fromCheckpoint?: number;
+  toCheckpoint?: number;
+  segments: LogSegment[];
+  spans?: Record<string, { manifestName?: string }>;
+}
+
 export interface TiltView {
   uiResources: UIResource[];
   uiSession: UISession;
+  logList?: LogList;
   tiltStartTime?: string;
   isComplete?: boolean;
 }
