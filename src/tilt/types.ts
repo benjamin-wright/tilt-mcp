@@ -1,3 +1,13 @@
+export interface KubeList<T> {
+  metadata?: { resourceVersion?: string };
+  items: T[];
+}
+
+export interface WatchEvent<T> {
+  type: 'ADDED' | 'MODIFIED' | 'DELETED' | 'ERROR';
+  object: T;
+}
+
 export interface BuildRecord {
   startTime: string;
   finishTime?: string;

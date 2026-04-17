@@ -1,5 +1,5 @@
 IMAGE := benwright/tilt-mcp
-TAG   := v0.0.2
+TAG   := v0.0.5
 
 .PHONY: build push test
 

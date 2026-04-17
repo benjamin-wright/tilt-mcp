@@ -2,7 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { listResources, getResource, getSession, getResourceLogs, waitForBuild } from './tilt/client.js';
+import { listResources, getResource, getSession, getResourceLogs, waitForBuild, triggerResource } from './tilt/client.js';
 import type { LogType } from './tilt/client.js';
 
 function describeBuildStatus(updateStatus: string | undefined): string {
@@ -120,6 +120,23 @@ server.registerTool(
     ];
     return {
       content: [{ type: 'text', text: lines.join('\n') }],
+    };
+  }
+);
+
+server.registerTool(
+  'trigger-resource',
+  {
+    title: 'Trigger Tilt Resource Build',
+    description: 'Manually trigger a rebuild of a named Tilt resource. Equivalent to clicking the rebuild button in the Tilt UI.',
+    inputSchema: z.object({
+      name: z.string().describe('The name of the Tilt resource to rebuild'),
+    }),
+  },
+  async ({ name }) => {
+    await triggerResource(name);
+    return {
+      content: [{ type: 'text', text: `Triggered rebuild of '${name}'.` }],
     };
   }
 );

@@ -51,7 +51,8 @@ Add to your workspace MCP config (`.vscode/mcp.json`):
       "args": [
         "run", "-i", "--rm",
         "-e", "TILT_HOST=host.docker.internal",
-        "benjaminwright/tilt-mcp"
+				"-v", "${env:HOME}/.tilt-dev/config:/root/.tilt-dev/config:ro",
+        "benjaminwright/tilt-mcp:v0.0.5"
       ]
     }
   }
