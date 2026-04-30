@@ -91,6 +91,14 @@ export interface BuildWaitResult {
   resources: Array<{ name: string; updateStatus: string; runtimeStatus: string; error?: string }>;
 }
 
+// Tilt's UpdateStatus values that indicate a build is still active. Anything
+// else ('ok', 'error', 'not_applicable', 'none') means the build has settled.
+const PENDING_UPDATE_STATUSES = new Set(['pending', 'in_progress']);
+
+function isSettledStatus(updateStatus: string | undefined): boolean {
+  return !PENDING_UPDATE_STATUSES.has(updateStatus ?? '');
+}
+
 export async function waitForBuild(timeoutSeconds: number): Promise<BuildWaitResult> {
   const config = loadTiltApiConfig();
   const start = Date.now();
@@ -147,7 +155,7 @@ export async function waitForBuild(timeoutSeconds: number): Promise<BuildWaitRes
             resources.set(event.object.metadata.name, event.object);
           }
           const active = [...resources.values()].filter(r => r.metadata.name !== '(Tiltfile)');
-          if (active.length > 0 && active.every(r => r.status.updateStatus !== 'pending')) {
+          if (active.length > 0 && active.every(r => isSettledStatus(r.status.updateStatus))) {
             settle();
             return;
           }
@@ -169,7 +177,7 @@ export async function waitForBuild(timeoutSeconds: number): Promise<BuildWaitRes
       done = true;
       req.destroy();
       const names = [...resources.values()]
-        .filter(r => r.metadata.name !== '(Tiltfile)' && r.status.updateStatus === 'pending')
+        .filter(r => r.metadata.name !== '(Tiltfile)' && !isSettledStatus(r.status.updateStatus))
         .map(r => r.metadata.name).join(', ');
       reject(new Error(
         `Timed out after ${timeoutSeconds}s waiting for builds to complete. Still pending: ${names || 'unknown'}`

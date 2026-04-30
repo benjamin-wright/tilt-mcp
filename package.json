@@ -6,6 +6,7 @@
     "doc": "docs"
   },
   "scripts": {
+    "start": "node build/index.js",
     "build": "tsc && chmod 755 build/index.js",
     "dev": "tsc --watch",
     "test:integration": "npm run build && node --test build/tests/integration/*.test.js"

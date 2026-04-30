@@ -1,0 +1,16 @@
+{
+	"servers": {
+		"tilt-dev": {
+      "type": "stdio",
+      "command": "npm",
+      "args": [
+        "run",
+        "start"
+      ],
+			"env": {
+				"TILT_HOST": "localhost"
+			}
+    }
+	},
+	"inputs": []
+}

@@ -1,7 +1,0 @@
-def always_fails_runtime():
-    local_resource(
-        'always-fails-runtime',
-        cmd='echo "build ok"',
-        serve_cmd='sh -c "echo \\"runtime failure\\" >&2; exit 1"',
-        labels=['examples'],
-    )
