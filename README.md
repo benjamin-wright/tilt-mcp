@@ -1,111 +1,72 @@
 # tilt-mcp
 
-An MCP server that gives your AI assistant visibility into a running [Tilt](https://tilt.dev/) session. Ask it what's broken, what's building, and what's happening — without leaving your editor.
+A local stdio MCP server for starting the two development environments and using
+Tilt to inspect builds, deployments, logs and tests.
 
----
-
-## What it does
-
-When you're working on a multi-service project with Tilt, your AI assistant is blind to what Tilt is actually doing. You have to context-switch to the Tilt UI, copy errors, paste them into chat, and repeat every time something changes.
-
-tilt-mcp bridges that gap. It connects to Tilt's built-in API and exposes a set of tools that your AI assistant can call to inspect the current state of your dev environment — build failures, runtime status, session errors — and reason about them alongside your code.
-
----
-
-## Tools
-
-| Tool | What it does |
-|---|---|
-| `list-resources` | List all Tilt resources with their current build and runtime status at a glance |
-| `get-resource` | Get the full status detail for a specific resource — build history, errors, pod phase |
-| `get-session` | Get overall session state — Tilt version, start time, and any fatal Tiltfile errors |
-
-**Planned:**
-
-| Tool | What it does |
-|---|---|
-| `trigger-resource` | Trigger a manual rebuild of a resource |
-| `get-logs` | Fetch recent log output for a resource |
-
----
-
-## Requirements
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (macOS / Windows) or Docker Engine (Linux)
-- [Tilt](https://tilt.dev/) running locally (`tilt up`)
-
----
-
-## Quick start
-
-### VS Code
-
-Add to your workspace MCP config (`.vscode/mcp.json`):
-
-```json
-{
-  "servers": {
-    "tilt": {
-      "type": "stdio",
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "TILT_HOST=host.docker.internal",
-				"-v", "${env:HOME}/.tilt-dev/config:/root/.tilt-dev/config:ro",
-        "benjaminwright/tilt-mcp:v0.0.5"
-      ]
-    }
-  }
-}
-```
-
-On **Linux**, add `"--add-host=host.docker.internal:host-gateway"` to the `args` list before the image name.
-
-### Claude Desktop
-
-Add to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "tilt": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "TILT_HOST=host.docker.internal",
-        "benjaminwright/tilt-mcp"
-      ]
-    }
-  }
-}
-```
-
----
-
-## Configuration
-
-| Environment variable | Default | Description |
-|---|---|---|
-| `TILT_HOST` | `localhost` | Hostname where Tilt is running |
-| `TILT_PORT` | `10350` | Port Tilt's API server listens on |
-
----
-
-## How it works
-
-tilt-mcp runs as a Docker container launched on demand by your AI client. Communication uses MCP's stdio transport — your client pipes JSON-RPC messages through stdin/stdout to the container, which in turn queries Tilt's REST API at `http://<TILT_HOST>:10350`. The container exits cleanly when the conversation ends.
-
-No ports are exposed. No background processes. No persistent state.
-
----
-
-## Building from source
+## Run through Codex
 
 ```sh
-git clone https://github.com/benjamin-wright/tilt-mcp.git
-cd tilt-mcp
-make build       # builds benjaminwright/tilt-mcp:latest
-make push        # pushes to Docker Hub
+npm ci
+npm run build
 ```
 
-See [docs/contributions.md](docs/contributions.md) for the full development setup.
+Use the local STDIO definition in `mcp.example.toml`. It runs Node with this
+repository's `build/index.js` and supplies the development tools' `PATH`.
+After changing the build, restart the MCP server in Codex to load it.
+
+## Start and stop
+
+Call `local_dev` with exactly these two fields:
+
+```json
+{"environment":"db-operator","execute":"start"}
+```
+
+`environment` is `db-operator` or `wasm-platform`; `execute` is `start` or `stop`.
+The repositories must sit beside this one under `~/Code/wasm`.
+
+Start stops the current Tilt session, tears down the other environment with
+`make cluster-down`, and runs `make cluster-up` when the selected cluster needs
+creating. An already running selected cluster is reused. A stopped selected
+cluster is recreated through those Makefile targets.
+
+Tilt runs as a foreground exec session held in memory by this MCP. Repeating
+start reuses the running Tilt session. Switching environments, calling stop,
+or closing the MCP stops that session. Stop also runs `make cluster-down`.
+MCP shutdown leaves the cluster available; its next start can reuse it.
+Use one MCP process to manage these environments.
+
+The Makefiles own cluster, registry and kubeconfig setup. Tilt uses their
+`~/.scratch/<environment>.yaml` kubeconfig and the fixed local port `10350`.
+Its console output goes to MCP stderr; stdout is reserved for MCP messages.
+
+## Build and test feedback
+
+After start, use `get-session` and `list-resources` to inspect startup. Use
+`get-resource` and `get-resource-logs` for failures. To verify a fresh build or
+test run, call `trigger-resource`, then `wait-for-build` with its resource name.
+A successful start launches Tilt; build and test success must be checked separately.
+
+The db-operator suites are `test-migrations`, `test-postgres`, `test-redis`,
+`test-nats` and `test-migration-sets`. wasm-platform has automatic `e2e-tests`
+and manual `wp: unit-tests` and `wp: integration-tests`.
+
+Wait checks complete snapshots, deployment readiness and build/runtime errors.
+Manual tests that have not run are reported as skipped. Trigger freshness is
+tracked within the current MCP process; trigger explicitly after code edits.
+
+## Development
+
+The lifecycle implementation is in `src/local-dev.ts`. Commands and the Tilt
+session factory are injected so tests can use fakes without Docker or privileges.
+The MCP registration is in `src/tools/local-dev.ts`.
+
+```sh
+npm run test:unit
+```
+
+The existing integration tests require a running Tilt environment:
+
+```sh
+npm run test:integration
+```

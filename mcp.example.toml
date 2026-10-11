@@ -1,0 +1,9 @@
+[mcp_servers.tilt]
+command = "/opt/homebrew/bin/node"
+args = ["/Users/benjaminwright/Code/wasm/tilt-mcp/build/index.js"]
+tool_timeout_sec = 600
+
+[mcp_servers.tilt.env]
+TILT_HOST = "127.0.0.1"
+TILT_PORT = "10350"
+PATH = "/Users/benjaminwright/go/bin:/Users/benjaminwright/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"

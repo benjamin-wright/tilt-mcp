@@ -19,6 +19,8 @@ export interface BuildRecord {
 
 export interface UIResourceStatus {
   buildHistory?: BuildRecord[];
+  currentBuild?: { startTime: string };
+  queued?: boolean;
   runtimeStatus?: string;
   updateStatus?: string;
   lastDeployTime?: string;
