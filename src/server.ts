@@ -1,9 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { listResources, getResource, getSession, getResourceLogs, waitForBuild, triggerResource } from './tilt/client.js';
+import { listResources, getResource, getSession, getResourceLogs, waitForBuild, triggerResource, cancelResource, type BuildCancellationResult } from './tilt/client.js';
 import type { LogType } from './tilt/client.js';
 import { registerLocalDevTool } from './tools/local-dev.js';
+import { registerKubernetesTools } from './tools/kubernetes.js';
 import { LocalDev } from './local-dev.js';
+import { KubernetesClient } from './kubernetes/client.js';
 
 function describeBuildStatus(updateStatus: string | undefined): string {
   switch (updateStatus) {
@@ -15,11 +17,15 @@ function describeBuildStatus(updateStatus: string | undefined): string {
   }
 }
 
-export function createServer({ localDev = new LocalDev() }: { localDev?: Pick<LocalDev, 'execute'> } = {}): McpServer {
+export function createServer({ localDev = new LocalDev(), kubernetes = new KubernetesClient(), builds = { trigger: triggerResource, cancel: cancelResource } }: {
+  localDev?: Pick<LocalDev, 'execute' | 'diagnostics'>;
+  kubernetes?: Pick<KubernetesClient, 'listApiResources' | 'listResources' | 'getResource'>;
+  builds?: { trigger(name: string, signal?: AbortSignal): Promise<void>; cancel(name: string, signal?: AbortSignal): Promise<BuildCancellationResult> };
+} = {}): McpServer {
   const server = new McpServer({
     name: 'tilt-mcp',
     version: '0.1.0',
-  }, { instructions: 'Use local_dev to start one local environment, then use resource, log, trigger and wait tools to iterate on builds, deployments and tests. Tilt runs for this MCP session; inspect build and test results after starting.' });
+  }, { instructions: 'Use local_dev to start one local environment, then use resource, log, trigger and wait tools to iterate on builds, deployments and tests. Tilt runs for this MCP session; inspect build and test results after starting. Use trigger-resource to run a named build or test, cancel-resource to cancel its active build, and wait-for-build to inspect completion. Cancelling a wait does not cancel its build. local_dev stop can interrupt startup for the same environment and tears down its cluster. If Tilt exits or its API becomes unavailable, use local_dev_diagnostics with the environment to inspect the last process status and retained console output. Use list_kubernetes_api_resources to discover available Kubernetes kinds, list_kubernetes_resources to inspect their metadata, and get_kubernetes_resource for one resource in full detail.' });
 
   server.registerTool(
     'list-resources',
@@ -141,23 +147,39 @@ export function createServer({ localDev = new LocalDev() }: { localDev?: Pick<Lo
     }
   );
 
+  const buildTaskInput = z.object({
+    name: z.string().min(1).max(253).refine(name => Boolean(name.trim()) && !/[\x00-\x1f\x7f]/.test(name), 'Expected a Tilt resource name').describe('The name of the Tilt build or test resource'),
+  }).strict();
   server.registerTool(
     'trigger-resource',
     {
       title: 'Trigger Tilt Resource Build',
       description: 'Manually trigger a rebuild of a named Tilt resource. Equivalent to clicking the rebuild button in the Tilt UI.',
-      inputSchema: z.object({
-        name: z.string().describe('The name of the Tilt resource to rebuild'),
-      }),
+      inputSchema: buildTaskInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async ({ name }) => {
-      await triggerResource(name);
+    async ({ name }, extra) => {
+      await builds.trigger(name, extra.signal);
       return {
         content: [{ type: 'text', text: `Triggered rebuild of '${name}'.` }],
       };
     }
   );
 
+  server.registerTool('cancel-resource', {
+    title: 'Cancel Tilt Resource Build',
+    description: 'Request cancellation of the active build or test for one named Tilt resource using its generated Stop Build button. Idle resources are a no-op; queued-only tasks cannot be cancelled. Does not stop runtime services, disable resources or tear down the environment. Use get-resource or wait-for-build to inspect the resulting build status.',
+    inputSchema: buildTaskInput,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async ({ name }, extra) => {
+    const result = await builds.cancel(name, extra.signal);
+    return {
+      content: [{ type: 'text', text: result.status === 'cancel_requested' ? `Requested cancellation of the active build for '${name}'.` : `No active build for '${name}'.` }],
+      structuredContent: { ...result },
+    };
+  });
+
   registerLocalDevTool(server, localDev);
+  registerKubernetesTools(server, kubernetes);
   return server;
 }

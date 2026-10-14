@@ -11,10 +11,30 @@ function viewUrl(): string {
   return `http://${host}:${port}/api/view`;
 }
 
-function triggerUrl(): string {
+function webUrl(path: string): string {
   const host = process.env['TILT_HOST'] ?? DEFAULT_HOST;
   const port = process.env['TILT_PORT'] ?? DEFAULT_PORT;
-  return `http://${host}:${port}/api/trigger`;
+  return `http://${host}:${port}${path}`;
+}
+
+function validateResourceName(name: string): void {
+  if (typeof name !== 'string' || !name.trim() || name.length > 253 || /[\x00-\x1f\x7f]/.test(name)) throw new Error('Expected a non-empty Tilt resource name of at most 253 characters');
+}
+
+function microTimestamp(value: string): string {
+  const parts = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$/.exec(value);
+  if (!parts || !Number.isFinite(Date.parse(value))) throw new Error('Tilt returned an invalid current build start time');
+  return `${parts[1]}.${(parts[2] ?? '').padEnd(6, '0')}Z`;
+}
+
+async function sendBuildAction(path: string, method: 'POST' | 'PUT', body: unknown, contentType: string, signal?: AbortSignal): Promise<Response> {
+  const timeout = AbortSignal.timeout(10_000);
+  const response = await fetch(webUrl(path), {
+    method, headers: { 'Content-Type': contentType }, body: JSON.stringify(body),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  });
+  if (!response.ok) throw new Error(`Tilt build action failed: HTTP ${response.status}`);
+  return response;
 }
 
 async function fetchView(timeoutMs = 10_000, signal?: AbortSignal): Promise<TiltView> {
@@ -179,30 +199,12 @@ export async function waitForBuild(timeoutSeconds: number, names?: string[], sig
   throw new Error(`Timed out after ${timeoutSeconds}s waiting for builds and runtime readiness. Still pending: ${pendingNames.join(', ') || 'no resources loaded'}`);
 }
 
-export async function triggerResource(name: string): Promise<void> {
-  const view = await fetchView();
+export async function triggerResource(name: string, signal?: AbortSignal): Promise<void> {
+  validateResourceName(name);
+  const view = await fetchView(10_000, signal);
   const resource = view.uiResources.find(r => r.metadata.name === name);
   if (!resource) throw new Error(`Resource not found: ${name}`);
-  const url = triggerUrl();
-  const body = JSON.stringify({ manifest_names: [name], build_reason: 32 });
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(10_000),
-    });
-  } catch (err) {
-    const host = process.env['TILT_HOST'] ?? DEFAULT_HOST;
-    const port = process.env['TILT_PORT'] ?? DEFAULT_PORT;
-    throw new Error(
-      `Could not reach Tilt at ${host}:${port}. Is Tilt running? (${String(err)})`
-    );
-  }
-  if (!response.ok) {
-    throw new Error(`Tilt API error: ${response.status} ${response.statusText} — ${url}`);
-  }
+  const response = await sendBuildAction('/api/trigger', 'POST', { manifest_names: [name], build_reason: 32 }, 'application/json', signal);
   // Tilt returns HTTP 200 with an error body when a resource is disabled.
   const responseBody = (await response.text()).trim();
   if (responseBody) throw new Error(`Tilt could not trigger '${name}': ${responseBody}`);
@@ -210,6 +212,34 @@ export async function triggerResource(name: string): Promise<void> {
     baselineBuildStart: resource.status.currentBuild?.startTime ?? resource.status.buildHistory?.[0]?.startTime,
     sessionStart: sessionStart(view),
   });
+}
+
+export interface BuildCancellationResult { name: string; status: 'cancel_requested' | 'not_building' }
+
+/** Updates only Tilt's generated Stop Build button for the selected active resource. */
+export async function cancelResource(name: string, signal?: AbortSignal): Promise<BuildCancellationResult> {
+  validateResourceName(name);
+  const view = await fetchView(10_000, signal);
+  const resource = view.uiResources.find(resource => resource.metadata.name === name);
+  if (!resource) throw new Error(`Resource not found: ${name}`);
+  if (!resource.status.currentBuild) {
+    if (resource.status.queued || PENDING_UPDATE_STATUSES.has(resource.status.updateStatus ?? '')) throw new Error(`Resource '${name}' has no active build to cancel. Tilt does not cancel queued builds through Stop Build.`);
+    return { name, status: 'not_building' };
+  }
+  const buttons = (view.uiButtons ?? []).filter(button => button.metadata.name === `${name}-stopbuild`);
+  const button = buttons[0];
+  if (buttons.length !== 1 || button.metadata.annotations?.['tilt.dev/uibutton-type'] !== 'StopBuild' || button.spec.location?.componentID !== name || button.spec.location?.componentType !== 'Resource') {
+    throw new Error(`Tilt's generated Stop Build button is unavailable for '${name}'`);
+  }
+  const pending = pendingTriggers.get(name);
+  const buildStart = resource.status.currentBuild.startTime;
+  const response = await sendBuildAction(`/proxy/apis/tilt.dev/v1alpha1/uibuttons/${encodeURIComponent(button.metadata.name)}/status`, 'PUT', {
+    metadata: button.metadata,
+    status: { ...button.status, lastClickedAt: microTimestamp(buildStart) },
+  }, 'application/json', signal);
+  await response.body?.cancel();
+  if (pending && pending.baselineBuildStart !== buildStart && !resource.status.queued && pendingTriggers.get(name) === pending) pendingTriggers.delete(name);
+  return { name, status: 'cancel_requested' };
 }
 
 export type LogType = 'all' | 'build' | 'runtime';

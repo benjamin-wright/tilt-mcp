@@ -34,6 +34,12 @@ export interface UIResource {
   status: UIResourceStatus;
 }
 
+export interface UIButton {
+  metadata: { name: string; annotations?: Record<string, string>; resourceVersion?: string };
+  spec: { location?: { componentID?: string; componentType?: string } };
+  status?: { lastClickedAt?: string };
+}
+
 export interface UISessionStatus {
   tiltStartTime?: string;
   tiltfileKey?: string;
@@ -71,6 +77,7 @@ export interface LogList {
 
 export interface TiltView {
   uiResources: UIResource[];
+  uiButtons?: UIButton[];
   uiSession: UISession;
   logList?: LogList;
   tiltStartTime?: string;

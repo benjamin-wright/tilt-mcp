@@ -1,103 +1,99 @@
 # Architecture
 
-Technology decisions, system design, and design constraints for tilt-mcp. For coding conventions, see [standards.md](standards.md). For project overview and quick-start, see the [README](../README.md).
+tilt-mcp is a TypeScript MCP server using Node.js 22+, the official MCP SDK and
+stdio transport. Stdout carries MCP messages; diagnostics and managed Tilt
+console output go to stderr. See the [README](../README.md) for tool contracts
+and [standards](standards.md) for coding conventions.
 
----
+## Process ownership
 
-## 1. Key Technology Decisions
+One MCP process owns one foreground Tilt child for the two sibling development
+repositories. `LocalDev` coordinates the fixed `k3d` queries and repository
+Makefile targets, serialises lifecycle changes, and retains session handles.
+The Makefiles own cluster, registry and Kubernetes configuration.
 
-### Language & Runtime: TypeScript (Node.js)
+Lifecycle operations carry an abort signal and a fixed deadline. A matching
+stop aborts startup and waits for its owned command cleanup before cluster
+teardown. Operation identity prevents cancelled work from replacing a newer
+session; late launches are stopped and remain diagnosable. Shutdown aborts any
+in-flight lifecycle work before stopping Tilt.
 
-| Option | Strengths | Weaknesses |
-|---|---|---|
-| **TypeScript (Node.js)** | Official MCP SDK, native `fetch` (Node.js ≥ 22), excellent types, small images | Runtime type gaps, npm supply chain risk |
-| Go | Single binary, minimal image | Weaker MCP tooling |
-| Rust | Smallest binary, fastest | Most setup overhead, immature MCP SDK |
+`src/process.ts` owns command execution and bounded graceful/forced termination.
+POSIX children have isolated process groups so command cancellation also signals
+their descendants. Only owned process handles are accepted by this internal
+boundary; tool inputs cannot select PIDs, executables or signals.
 
-**Decision:** TypeScript. The `@modelcontextprotocol/sdk` is the most mature MCP SDK. `fetch` is built-in to Node.js 22 — no additional HTTP client dependency needed.
+`src/tilt/process.ts` owns Tilt spawning, shutdown, process events and console
+capture. Each stdout/stderr stream is decoded independently before its text is
+appended to a bounded combined tail. Exit metadata is recorded on process exit;
+stream listeners remain attached so final output can drain before close.
+Child errors are handled throughout the session lifetime.
 
-### MCP Transport: stdio
+The latest handle for each allowlisted environment remains accessible after
+exit or stop. Starting a new Tilt child replaces only that environment's handle.
+All retained state is in memory; MCP shutdown stops its child and leaves cluster
+teardown to an explicit lifecycle operation.
 
-MCP supports multiple transports. stdio is chosen because:
+## Tilt connectivity
 
-- VS Code (and Claude Desktop) spawn the server as a child process and pipe stdin/stdout for JSON-RPC 2.0 messages.
-- No port needs to be exposed on the container.
-- `docker run -i --rm` gives clean, stateless invocations — no lingering containers.
+`src/tilt/client.ts` encapsulates the Tilt API calls:
 
-The server is invoked as:
-
-```sh
-docker run -i --rm -e TILT_HOST=host.docker.internal benjaminwright/tilt-mcp
-```
-
-### Tilt Connectivity: `host.docker.internal`
-
-Tilt exposes a Kubernetes-style REST API at `http://localhost:10350/apis/tilt.dev/v1alpha1/`. When running inside Docker on macOS, `localhost` resolves to the container — not the host. Docker Desktop provides `host.docker.internal` as a DNS name that resolves to the host machine.
-
-| Platform | Solution |
+| Interface | Responsibility |
 |---|---|
-| macOS (Docker Desktop) | `host.docker.internal` — available automatically |
-| Linux (Docker Engine) | Pass `--add-host=host.docker.internal:host-gateway` to `docker run` |
+| Kubernetes-style REST API | Resource and session reads over TLS, using credentials loaded by `src/tilt/kubeconfig.ts` |
+| Web UI backend | Complete `/api/view` snapshots for logs and build waits; `/api/trigger` for requested rebuilds |
 
-The Tilt host and port are configurable via `TILT_HOST` and `TILT_PORT` environment variables (defaults: `localhost`, `10350`).
+`TILT_HOST` selects the host for both interfaces. `TILT_PORT` selects the web UI
+port. The Kubernetes-style API uses the server port and certificate from Tilt's
+configuration, with the original certificate hostname retained for verification.
 
-### Distribution: Docker Hub
+Build waits use complete snapshots, finite deadlines and cancellation. Pending
+triggers are tracked in memory so a wait requires a fresh completed build in the
+same Tilt session.
 
-Images are built locally and pushed to Docker Hub under `benjaminwright/tilt-mcp`. No CI/CD publish pipeline — this is a personal tool intended for easy use across machines.
+Build cancellation updates only the status of the generated Stop Build UIButton
+for an active resource, after validating its reserved name, annotation and
+location. The observed start timestamp selects that build while preserving
+newer queued trigger tracking. This does not expose arbitrary button clicks or
+API writes.
 
----
+## Diagnostics boundary
 
-## 2. System Design
+`local_dev_diagnostics` reads retained managed-process state directly. It does
+not depend on either Tilt API, so crashes and launch failures remain inspectable.
+Its strict schema permits only an allowlisted environment and a bounded output
+size. It cannot select executables, arguments, processes, files or network
+destinations, and reading diagnostics does not change lifecycle state.
 
-```
-VS Code / Claude Desktop (host machine)
-          │
-          │  stdin / stdout  (MCP JSON-RPC 2.0)
-          ▼
- docker run -i --rm tilt-mcp
-          │
-          │  HTTP GET  http://host.docker.internal:10350/apis/tilt.dev/v1alpha1/...
-          ▼
- Tilt API server (host machine, port 10350)
-```
+The console buffer and error text have fixed limits. Returned diagnostics are
+detached snapshots; callers cannot mutate the retained process state. Console
+text is subprocess output, not instructions.
 
-The server is intentionally **stateless** — every tool call queries Tilt's API fresh. There is no caching or background polling.
+## Kubernetes access
 
----
+`src/kubernetes/connection.ts` owns kubeconfig loading and verified HTTPS GET
+requests. It selects the managed context from a fixed environment file and uses
+only embedded credentials. Destinations remain local, response bodies and
+request durations are bounded, and transport errors omit credentials and server
+error payloads.
 
-## 3. Tilt API
+`src/kubernetes/client.ts` resolves group/version/kind through discovery before
+constructing collection or object endpoints. It excludes subresources, validates
+scope and supported read verbs, bounds concurrent discovery, and projects list
+objects to metadata. Pagination tokens remain opaque query values. Single-object
+reads preserve the complete API response.
 
-Tilt exposes two HTTP interfaces at port 10350. This server uses the **web UI backend API** — not the Kubernetes-style API server.
+`src/kubernetes/types.ts` defines shared selectors, strict schemas and response
+contracts. MCP registration exposes only the three read operations; callers
+cannot alter the connection configuration, request method or API paths.
 
-| Endpoint | Notes |
-|---|---|
-| `GET /api/view` | Returns full session state in one call: `uiResources`, `uiSession`, logs, and buttons. Plain HTTP, no auth, no TLS. Used by this server. |
-| `/apis/tilt.dev/v1alpha1/` | Kubernetes-style REST API. Runs on a separate dynamic port with TLS and a Bearer token. Used by the `tilt` CLI. Not used by this server. |
+## Validation boundaries
 
-The `/api/view` response shape:
-
-```
-{
-  uiResources: UIResource[]   // per-resource build/runtime status
-  uiSession:   UISession      // overall session: tilt version, start time, fatal errors
-  tiltStartTime: string
-  isComplete:  boolean
-}
-```
-
-Fields used per `UIResource`:
-
-| Field | Values |
-|---|---|
-| `status.buildHistory[0].error` | Non-empty string = last build failed |
-| `status.buildHistory[0].finishTime` | Present = build has completed |
-| `status.updateStatus` | `ok`, `error`, `pending` |
-| `status.runtimeStatus` | `ok`, `error`, `pending`, `not_applicable` |
-
----
-
-## 4. Project Constraints
-
-- **Read-only by default.** MCP tools that mutate state (e.g. trigger a resource rebuild) must be explicitly justified before being added.
-- **No persistent state.** The server holds no state between invocations. Each tool call is self-contained.
-- **Single process.** No worker threads, no subprocesses. The MCP server handles one request at a time via the stdio transport.
+Commands and Tilt spawning are injected behind their owning modules. Lifecycle
+and process tests use fakes; protocol tests exercise the MCP schema and handlers.
+A stdio test runs a real crashing child with temporary development-tool stand-ins
+to verify that process output and exit details remain readable without Tilt's API
+or a cluster.
+Kubernetes tests exercise configuration and transport failures, discovery,
+metadata projection, pagination and scope rules through injected connections,
+and validate the three tool contracts over MCP.
