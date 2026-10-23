@@ -111,6 +111,12 @@ Wait checks complete snapshots, deployment readiness and build/runtime errors.
 Manual tests that have not run are reported as skipped. Trigger freshness is
 tracked within the current MCP process; trigger explicitly after code edits.
 
+Logs and rebuild requests use the installed Tilt CLI, which authenticates to
+the running server. Log reads return the latest 2,000 records, filtered by
+resource and source. Status, waits and Stop Build requests use Tilt's
+authenticated TLS API. CLI commands have a ten-second deadline and bounded
+output; cancellation stops the owned command process.
+
 ## Kubernetes reads
 
 Three read-only tools access the selected environment's Kubernetes API directly,

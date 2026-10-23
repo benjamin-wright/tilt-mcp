@@ -1,21 +1,5 @@
-import https from 'node:https';
 import type { KubeList, TiltView, UIResource, UISession, LogSegment } from './types.js';
-import { loadTiltApiConfig, type TiltApiConfig } from './kubeconfig.js';
-
-const DEFAULT_HOST = 'localhost';
-const DEFAULT_PORT = '10350';
-
-function viewUrl(): string {
-  const host = process.env['TILT_HOST'] ?? DEFAULT_HOST;
-  const port = process.env['TILT_PORT'] ?? DEFAULT_PORT;
-  return `http://${host}:${port}/api/view`;
-}
-
-function webUrl(path: string): string {
-  const host = process.env['TILT_HOST'] ?? DEFAULT_HOST;
-  const port = process.env['TILT_PORT'] ?? DEFAULT_PORT;
-  return `http://${host}:${port}${path}`;
-}
+import { tiltRequest, tiltTransport } from './transport.js';
 
 function validateResourceName(name: string): void {
   if (typeof name !== 'string' || !name.trim() || name.length > 253 || /[\x00-\x1f\x7f]/.test(name)) throw new Error('Expected a non-empty Tilt resource name of at most 253 characters');
@@ -27,79 +11,17 @@ function microTimestamp(value: string): string {
   return `${parts[1]}.${(parts[2] ?? '').padEnd(6, '0')}Z`;
 }
 
-async function sendBuildAction(path: string, method: 'POST' | 'PUT', body: unknown, contentType: string, signal?: AbortSignal): Promise<Response> {
-  const timeout = AbortSignal.timeout(10_000);
-  const response = await fetch(webUrl(path), {
-    method, headers: { 'Content-Type': contentType }, body: JSON.stringify(body),
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-  });
-  if (!response.ok) throw new Error(`Tilt build action failed: HTTP ${response.status}`);
-  return response;
-}
-
-async function fetchView(timeoutMs = 10_000, signal?: AbortSignal): Promise<TiltView> {
-  const url = viewUrl();
-  let response: Response;
-  try {
-    const timeout = AbortSignal.timeout(Math.max(1, Math.ceil(timeoutMs)));
-    response = await fetch(url, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
-  } catch (err) {
-    const host = process.env['TILT_HOST'] ?? DEFAULT_HOST;
-    const port = process.env['TILT_PORT'] ?? DEFAULT_PORT;
-    throw new Error(
-      `Could not reach Tilt at ${host}:${port}. Is Tilt running? (${String(err)})`
-    );
-  }
-  if (!response.ok) {
-    throw new Error(`Tilt API error: ${response.status} ${response.statusText} — ${url}`);
-  }
-  return response.json() as Promise<TiltView>;
-}
-
-async function get<T>(config: TiltApiConfig, path: string, notFoundMessage?: string): Promise<T> {
-  const url = `${config.server}/apis/tilt.dev/v1alpha1/${path}`;
-  return new Promise<T>((resolve, reject) => {
-    const req = https.request(url, { ca: config.ca, servername: config.certHost, headers: { Authorization: `Bearer ${config.token}` } }, (res) => {
-      let body = '';
-      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
-      res.on('end', () => {
-        if (res.statusCode === 404 && notFoundMessage) {
-          reject(new Error(notFoundMessage));
-          return;
-        }
-        if (res.statusCode !== 200) {
-          reject(new Error(`Tilt API error: ${res.statusCode} ${res.statusMessage} — ${url}`));
-          return;
-        }
-        try {
-          resolve(JSON.parse(body) as T);
-        } catch (err) {
-          reject(new Error(`Failed to parse Tilt API response: ${String(err)}`));
-        }
-      });
-      res.on('error', reject);
-    });
-    req.on('error', (err) => {
-      reject(new Error(`Could not reach Tilt API at ${config.server}. Is Tilt running? (${String(err)})`));
-    });
-    req.end();
-  });
-}
-
 export async function listResources(): Promise<UIResource[]> {
-  const config = loadTiltApiConfig();
-  const list = await get<KubeList<UIResource>>(config, 'uiresources');
+  const list = await tiltRequest<KubeList<UIResource>>('uiresources');
   return list.items;
 }
 
 export async function getResource(name: string): Promise<UIResource> {
-  const config = loadTiltApiConfig();
-  return get<UIResource>(config, `uiresources/${encodeURIComponent(name)}`, `Resource not found: ${name}`);
+  return tiltRequest<UIResource>(`uiresources/${encodeURIComponent(name)}`);
 }
 
 export async function getSession(): Promise<UISession> {
-  const config = loadTiltApiConfig();
-  const list = await get<KubeList<UISession>>(config, 'uisessions');
+  const list = await tiltRequest<KubeList<UISession>>('uisessions');
   const session = list.items[0];
   if (!session) {
     throw new Error('No Tilt session found.');
@@ -170,7 +92,8 @@ export async function waitForBuild(timeoutSeconds: number, names?: string[], sig
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     // Each read contains every resource, unlike a watch's initial ADDED events.
-    const view = await fetchView(Math.min(10_000, deadline - Date.now()), signal);
+    const timeout = AbortSignal.timeout(Math.max(1, Math.ceil(Math.min(10_000, deadline - Date.now()))));
+    const view = await tiltTransport.snapshot(signal ? AbortSignal.any([signal, timeout]) : timeout);
     const fatal = view.uiSession?.status?.fatalError;
     if (fatal) throw new Error(`Tilt session failed: ${fatal}`);
     const tiltfile = view.uiResources.find(r => r.metadata.name === '(Tiltfile)');
@@ -201,13 +124,10 @@ export async function waitForBuild(timeoutSeconds: number, names?: string[], sig
 
 export async function triggerResource(name: string, signal?: AbortSignal): Promise<void> {
   validateResourceName(name);
-  const view = await fetchView(10_000, signal);
+  const view = await tiltTransport.snapshot(signal);
   const resource = view.uiResources.find(r => r.metadata.name === name);
   if (!resource) throw new Error(`Resource not found: ${name}`);
-  const response = await sendBuildAction('/api/trigger', 'POST', { manifest_names: [name], build_reason: 32 }, 'application/json', signal);
-  // Tilt returns HTTP 200 with an error body when a resource is disabled.
-  const responseBody = (await response.text()).trim();
-  if (responseBody) throw new Error(`Tilt could not trigger '${name}': ${responseBody}`);
+  await tiltTransport.trigger(name, signal);
   pendingTriggers.set(name, {
     baselineBuildStart: resource.status.currentBuild?.startTime ?? resource.status.buildHistory?.[0]?.startTime,
     sessionStart: sessionStart(view),
@@ -219,7 +139,7 @@ export interface BuildCancellationResult { name: string; status: 'cancel_request
 /** Updates only Tilt's generated Stop Build button for the selected active resource. */
 export async function cancelResource(name: string, signal?: AbortSignal): Promise<BuildCancellationResult> {
   validateResourceName(name);
-  const view = await fetchView(10_000, signal);
+  const view = await tiltTransport.snapshot(signal);
   const resource = view.uiResources.find(resource => resource.metadata.name === name);
   if (!resource) throw new Error(`Resource not found: ${name}`);
   if (!resource.status.currentBuild) {
@@ -233,44 +153,14 @@ export async function cancelResource(name: string, signal?: AbortSignal): Promis
   }
   const pending = pendingTriggers.get(name);
   const buildStart = resource.status.currentBuild.startTime;
-  const response = await sendBuildAction(`/proxy/apis/tilt.dev/v1alpha1/uibuttons/${encodeURIComponent(button.metadata.name)}/status`, 'PUT', {
-    metadata: button.metadata,
-    status: { ...button.status, lastClickedAt: microTimestamp(buildStart) },
-  }, 'application/json', signal);
-  await response.body?.cancel();
+  await tiltTransport.cancel(button, microTimestamp(buildStart), signal);
   if (pending && pending.baselineBuildStart !== buildStart && !resource.status.queued && pendingTriggers.get(name) === pending) pendingTriggers.delete(name);
   return { name, status: 'cancel_requested' };
 }
 
 export type LogType = 'all' | 'build' | 'runtime';
 
-const RUNTIME_PREFIXES = ['pod:', 'monitor:', 'events:'];
-
 export async function getResourceLogs(name: string, logType: LogType = 'all'): Promise<LogSegment[]> {
-  const view = await fetchView();
-  const resource = view.uiResources.find(r => r.metadata.name === name);
-  if (!resource) {
-    throw new Error(`Resource not found: ${name}`);
-  }
-
-  const spans = view.logList?.spans ?? {};
-  const matchingSpanIds = new Set(
-    Object.entries(spans)
-      .filter(([id, info]) => {
-        if (info.manifestName !== name) return false;
-        const isRuntime = RUNTIME_PREFIXES.some(p => id.startsWith(p));
-        if (logType === 'build') return !isRuntime;
-        if (logType === 'runtime') return isRuntime;
-        return true;
-      })
-      .map(([id]) => id)
-  );
-
-  if (matchingSpanIds.size === 0) {
-    return [];
-  }
-
-  return (view.logList?.segments ?? []).filter(
-    s => s.spanId !== undefined && matchingSpanIds.has(s.spanId)
-  );
+  validateResourceName(name);
+  return tiltTransport.logs(name, logType);
 }

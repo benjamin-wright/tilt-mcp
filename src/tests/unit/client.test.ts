@@ -1,7 +1,8 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { cancelResource, triggerResource, waitForBuild } from '../../tilt/client.js';
-import type { TiltView, UIResource, UIResourceStatus } from '../../tilt/types.js';
+import { cancelResource, getResourceLogs, triggerResource, waitForBuild } from '../../tilt/client.js';
+import { tiltTransport } from '../../tilt/transport.js';
+import type { TiltView, UIButton, UIResource, UIResourceStatus } from '../../tilt/types.js';
 
 const OLD_BUILD = '2026-10-11T10:00:00Z';
 const NEW_BUILD = '2026-10-11T10:00:01Z';
@@ -31,29 +32,20 @@ function view(resources: UIResource[], fatalError?: string, start = SESSION_STAR
   };
 }
 
-function mockTilt(t: TestContext, snapshots: TiltView[], triggerBody = '') {
+function mockTilt(t: TestContext, snapshots: TiltView[], triggerError?: string) {
   let reads = 0;
-  const triggers: unknown[] = [];
-  const cancels: Array<{ url: string; body: unknown }> = [];
-  const fetchMock: typeof fetch = async (input, init) => {
-    const url = String(input);
-    assert.ok(init?.signal, 'network requests must be bounded');
-    if (url.endsWith('/api/view')) {
-      const snapshot = snapshots[Math.min(reads++, snapshots.length - 1)];
-      return Response.json(snapshot);
-    }
-    if (url.includes('/proxy/apis/tilt.dev/v1alpha1/uibuttons/') && url.endsWith('/status')) {
-      assert.equal(init?.method, 'PUT');
-      assert.equal((init.headers as Record<string, string>)['Content-Type'], 'application/json');
-      cancels.push({ url, body: JSON.parse(String(init.body)) });
-      return Response.json({});
-    }
-    assert.ok(url.endsWith('/api/trigger'));
-    assert.equal(init?.method, 'POST');
-    triggers.push(JSON.parse(String(init?.body)));
-    return new Response(triggerBody, { status: 200 });
-  };
-  t.mock.method(globalThis, 'fetch', fetchMock);
+  const triggers: string[] = [];
+  const cancels: Array<{ button: UIButton; timestamp: string }> = [];
+  t.mock.method(tiltTransport, 'snapshot', async (signal?: AbortSignal) => {
+    return snapshots[Math.min(reads++, snapshots.length - 1)];
+  });
+  t.mock.method(tiltTransport, 'trigger', async (name: string, signal?: AbortSignal) => {
+    if (triggerError) throw new Error(triggerError);
+    triggers.push(name);
+  });
+  t.mock.method(tiltTransport, 'cancel', async (button: UIButton, timestamp: string, signal?: AbortSignal) => {
+    cancels.push({ button, timestamp });
+  });
   return { reads: () => reads, triggers, cancels };
 }
 
@@ -121,7 +113,7 @@ test('manual resources that have never run are identified as skipped', async t =
 test('trigger followed by wait requires a new completion despite delayed scheduling', async t => {
   const name = 'delayed-trigger';
   const mock = mockTilt(t, [
-    view([resource(name)]), // baseline before POST
+    view([resource(name)]), // baseline before triggering
     view([resource(name)]), // queue has not become visible yet
     view([resource(name, { buildHistory: [{ startTime: NEW_BUILD, finishTime: NEW_BUILD }] })]),
   ]);
@@ -129,7 +121,7 @@ test('trigger followed by wait requires a new completion despite delayed schedul
   const result = await waitForBuild(2, [name]);
   assert.equal(mock.reads(), 3);
   assert.equal(result.resources[0].error, undefined);
-  assert.deepEqual(mock.triggers, [{ manifest_names: [name], build_reason: 32 }]);
+  assert.deepEqual(mock.triggers, [name]);
 });
 
 test('a build already in progress before trigger is not mistaken for the triggered build', async t => {
@@ -145,7 +137,7 @@ test('a build already in progress before trigger is not mistaken for the trigger
   assert.equal(mock.reads(), 3);
 });
 
-test('trigger treats an HTTP 200 error body as a failure', async t => {
+test('trigger propagates transport failures', async t => {
   mockTilt(t, [view([resource('disabled')])], 'resource "disabled" is currently disabled');
   await assert.rejects(triggerResource('disabled'), /currently disabled/);
 });
@@ -170,29 +162,27 @@ test('wait reports nonexistent selections and rejects invalid timeout bounds', a
   await assert.rejects(waitForBuild(2, []), /names/);
 });
 
-test('wait forwards cancellation to an in-flight network request', async t => {
+test('wait forwards cancellation to an in-flight snapshot request', async t => {
   const controller = new AbortController();
-  const fetchMock: typeof fetch = async (_input, init) => {
-    assert.ok(init?.signal);
+  t.mock.method(tiltTransport, 'snapshot', async (signal?: AbortSignal) => {
+    assert.ok(signal);
     return new Promise((_resolve, reject) => {
-      init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     });
-  };
-  t.mock.method(globalThis, 'fetch', fetchMock);
+  });
   const waiting = waitForBuild(2, undefined, controller.signal);
   controller.abort(new Error('client cancelled'));
   await assert.rejects(waiting, /client cancelled/);
 });
 
-test('cancel uses only the generated Stop Build status endpoint and observed microsecond start time', async t => {
+test('cancel passes only the generated Stop Build button and observed microsecond start time', async t => {
   const name = 'execution-host: regression-tests';
   const startTime = '2026-10-13T17:30:00.123456Z';
   const snapshot = view([resource(name, { updateStatus: 'in_progress', currentBuild: { startTime } }), resource('unrelated')]);
   const mock = mockTilt(t, [snapshot]);
   assert.deepEqual(await cancelResource(name), { name, status: 'cancel_requested' });
   assert.equal(mock.cancels.length, 1);
-  assert.ok(mock.cancels[0].url.endsWith('/uibuttons/execution-host%3A%20regression-tests-stopbuild/status'));
-  assert.deepEqual(mock.cancels[0].body, { metadata: snapshot.uiButtons![0].metadata, status: { lastClickedAt: startTime } });
+  assert.deepEqual(mock.cancels[0], { button: snapshot.uiButtons![0], timestamp: startTime });
   assert.deepEqual(mock.triggers, []);
 });
 
@@ -224,7 +214,7 @@ test('cancel normalizes seconds to six timestamp digits and rejects malformed ti
   const good = 'normalized-cancel';
   const mock = mockTilt(t, [view([resource(good, { currentBuild: { startTime: NEW_BUILD } })])]);
   await cancelResource(good);
-  assert.equal((mock.cancels[0].body as { status: { lastClickedAt: string } }).status.lastClickedAt, NEW_BUILD.replace('Z', '.000000Z'));
+  assert.equal(mock.cancels[0].timestamp, NEW_BUILD.replace('Z', '.000000Z'));
   const invalid = mockTilt(t, [view([resource('bad-time', { currentBuild: { startTime: 'invalid' } })])]);
   await assert.rejects(cancelResource('bad-time'), /invalid current build start time/);
   assert.equal(invalid.cancels.length, 0);
@@ -277,14 +267,15 @@ test('a concurrent newer trigger survives an older cancellation acknowledgement'
     view([resource(name, { buildHistory: [{ startTime: NEW_BUILD, finishTime: NEW_BUILD }] })]),
     view([resource(name, { buildHistory: [{ startTime: next, finishTime: next }] })]),
   ]);
-  const existingFetch = globalThis.fetch;
+  const existingCancel = tiltTransport.cancel;
   let enter!: () => void;
   let finish!: () => void;
   const entered = new Promise<void>(resolve => { enter = resolve; });
   const completed = new Promise<void>(resolve => { finish = resolve; });
-  t.mock.method(globalThis, 'fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-    if (init?.method === 'PUT') { enter(); await completed; }
-    return existingFetch(input, init);
+  t.mock.method(tiltTransport, 'cancel', async (button: UIButton, timestamp: string, signal?: AbortSignal) => {
+    enter();
+    await completed;
+    return existingCancel(button, timestamp, signal);
   });
   await triggerResource(name);
   const cancellation = cancelResource(name);
@@ -298,11 +289,12 @@ test('a concurrent newer trigger survives an older cancellation acknowledgement'
 
 test('cancel errors and invalid resource names do not invoke another mutation', async t => {
   let writes = 0;
-  t.mock.method(globalThis, 'fetch', async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-    if (init?.method === 'PUT') { writes++; return new Response('conflict', { status: 409 }); }
-    return Response.json(view([resource('conflict-task', { currentBuild: { startTime: NEW_BUILD } })]));
+  mockTilt(t, [view([resource('conflict-task', { currentBuild: { startTime: NEW_BUILD } })])]);
+  t.mock.method(tiltTransport, 'cancel', async () => {
+    writes++;
+    throw new Error('conflict');
   });
-  await assert.rejects(cancelResource('conflict-task'), /HTTP 409/);
+  await assert.rejects(cancelResource('conflict-task'), /conflict/);
   assert.equal(writes, 1);
   for (const name of ['', ' ', 'x'.repeat(254), 'x\n']) {
     await assert.rejects(cancelResource(name), /resource name/);
@@ -311,15 +303,45 @@ test('cancel errors and invalid resource names do not invoke another mutation', 
   assert.equal(writes, 1);
 });
 
-test('request cancellation reaches both trigger and cancel HTTP operations', async t => {
-  for (const operation of [triggerResource, cancelResource]) {
+test('request cancellation reaches both trigger and cancel transport operations', async t => {
+  for (const [operation, method] of [[triggerResource, 'trigger'], [cancelResource, 'cancel']] as const) {
     const controller = new AbortController();
-    t.mock.method(globalThis, 'fetch', async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      assert.ok(init?.signal);
-      return new Promise((_resolve, reject) => init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true }));
-    });
+    mockTilt(t, [view([resource('abort-build-action', { currentBuild: { startTime: NEW_BUILD } })])]);
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const block = (signal?: AbortSignal) => {
+      assert.ok(signal);
+      entered();
+      return new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    };
+    if (method === 'trigger') {
+      t.mock.method(tiltTransport, 'trigger', (_name: string, signal?: AbortSignal) => block(signal));
+    } else {
+      t.mock.method(tiltTransport, 'cancel', (_button: UIButton, _timestamp: string, signal?: AbortSignal) => block(signal));
+    }
     const pending = operation('abort-build-action', controller.signal);
+    await started;
     controller.abort(new Error('stop request'));
     await assert.rejects(pending, /stop request/);
   }
+});
+
+test('logs pass each requested source to the transport and preserve returned segments', async t => {
+  const calls: Array<[string, string]> = [];
+  const segments = [{ text: 'test output', level: 'INFO' }];
+  t.mock.method(tiltTransport, 'logs', async (name: string, source: string) => {
+    calls.push([name, source]);
+    return segments;
+  });
+  for (const source of ['all', 'build', 'runtime'] as const) {
+    assert.equal(await getResourceLogs('test-task', source), segments);
+  }
+  assert.deepEqual(calls, [['test-task', 'all'], ['test-task', 'build'], ['test-task', 'runtime']]);
+  await assert.rejects(getResourceLogs(''), /resource name/);
+  assert.equal(calls.length, 3);
+});
+
+test('logs propagate transport errors', async t => {
+  t.mock.method(tiltTransport, 'logs', async () => { throw new Error('logs unavailable'); });
+  await assert.rejects(getResourceLogs('test-task'), /logs unavailable/);
 });

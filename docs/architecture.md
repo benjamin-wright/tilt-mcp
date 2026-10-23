@@ -41,13 +41,14 @@ teardown to an explicit lifecycle operation.
 | Interface | Responsibility |
 |---|---|
 | Kubernetes-style REST API | Resource and session reads over TLS, using credentials loaded by `src/tilt/kubeconfig.ts` |
-| Web UI backend | Complete `/api/view` snapshots for logs and build waits; `/api/trigger` for requested rebuilds |
+| Tilt CLI | Authenticated `tilt logs --json` reads and `tilt trigger` rebuild requests |
 
-`TILT_HOST` selects the host for both interfaces. `TILT_PORT` selects the web UI
-port. The Kubernetes-style API uses the server port and certificate from Tilt's
+`TILT_HOST` selects the host for both interfaces. `TILT_PORT` selects the CLI
+server port. The Kubernetes-style API uses the server port and certificate from Tilt's
 configuration, with the original certificate hostname retained for verification.
 
-Build waits use complete snapshots, finite deadlines and cancellation. Pending
+Build waits read resources, session and buttons through the authenticated API,
+with finite deadlines and cancellation. Pending
 triggers are tracked in memory so a wait requires a fresh completed build in the
 same Tilt session.
 
@@ -56,6 +57,12 @@ for an active resource, after validating its reserved name, annotation and
 location. The observed start timestamp selects that build while preserving
 newer queued trigger tracking. This does not expose arbitrary button clicks or
 API writes.
+
+CLI arguments are passed directly without a shell; resource names follow `--`
+so they cannot become options. Commands reuse the bounded process runner.
+Log reads retain at most 2,000 records and filter structured span and resource
+fields. Local update-command output remains build output even though the CLI
+labels it runtime; Pod, monitor and event spans remain runtime output.
 
 ## Diagnostics boundary
 
